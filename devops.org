@@ -1,0 +1,2306 @@
+* API
+- max 10,000 executions per second ( per account )
+- you can throttle at the Usage Plan level
+- remember lambda has 1000 executions per second, so it could be a choke point
+  as well
+- can invoke and pass payload to ANY AWS services
+: Lambda
+: http
+: aws service ( can be in a different region )
+: VPC Link
+- how to create private api
+: create VPC with at least one subnet & DNS resolution
+: create VPC endpoint that can do execute.apiaction
+: enable private DNS resolution for VPC endpoint
+: create API with private endpoints
+: attach resource policy to the API, where we whitelist the VPC endpoint
+- you can create private INTEGRATION with NETWORK load balancer (only)
+* AB Testing
+- serve statically two versions of the website via S3
+- set up two origins in CloudFront ( each points at S3 )
+- use CloudFront with Lambda@Edge for routing 
+* AURORA
+Allows multi master
+You CAN'T encrypt existing unencrypted database
+** endpoints
+- CLUSTER 
+Connects to the current PRIMARY DB instance in your cluster
+
+- READER  
+Load balanced support for READ-ONLY connections
+
+- CUSTOM 
+Set of DB's you choose (you can have up to 5 custom endpoints)
+Why? Example: you have users that want to generate reports and need access to
+low latency instances in your cluster, while you keep them away from your
+production instances.
+
+- INSTANCE 
+Connects to specific instance in the cluster. 
+Wny? For custom loadbalancing 
+* AMAZON ELASTICSEARCH
+** Use cases:
+- log analytics
+- real time app monitoring
+- security analytics
+- click stream analytics
+- full text search
+- indexing
+** EKL stack
+ElasticSearch + Kibana + Logstash
+ES : search & indexing
+K : dashboards, alternative to CW dashboards
+L : CW logs alternative
+** Not managed stack - Dynamo
+DynamoDB + DynamoDB Streams + Lambda + Amazon ES
+** Not managed stack - Logs
+<REAL TIME>
+CW Logs -> Subscription Filter -> Lambda -> Amazon ES
+<NEAR REAL TIME>
+CW Logs -> Subscription Filter -> Kinesis Data FireHose -> ES
+: you can deliver logs directly to FireHose!
+* ASG 
+- launch configurations cannot be edited!
+- you can put instances into STANDBY, they stay in the ASG but are not served traffic
+** lifecycles
+- EC2_INSTANCE_LAUNCHING
+Pending -> Pending:Wait -> Pending:Proceed -> InService
+
+- EC2_INSTANCE_TERMINATING
+Termination -> Termination:Wait -> Terminatin:Proceed -> Terminated
+
+- EnteringStandby ( for troubleshooting etc )
+InService -> EnteringStandby -> Standby
+
+- Detach
+InService -> Detaching -> Detached -> EC2Instance(standalone)
+** lifecycle - cli
+*** create hook
+#+begin_src bash
+  aws autoscaling put-lifecycle-hook \
+      --lifecycle-hook-name devops-pro-hook \
+      --auto-scaling-group-name devopsASG \
+      --lifecycle-transition autoscaling:EC2_INSTANCE_LAUNCHING \
+      #   declare notifications target
+      --notification-target-arn arn:aws:sns:region:123456789012:my-sns-topic \
+          # you have to give role to push to notifications
+      --role-arn arn:aws:iam::123456789012:role/my-notification-role
+#+end_src
+*** complete hook
+#+begin_src bash
+  aws autoscaling complete-lifecycle-action \
+      --lifecycle-action-result CONTINUE \
+      --lifecycle-hook-name my-hook-name \
+      --auto-scaling-group-name my-asg \
+      # you have to dynamically get instance id before you run this command
+      --instance-id $MY_INSTANCE_ID
+#+end_src
+** timeout
+Default is 1h, you can increase it by setting HEARBEAT timeout ( set it directly
+on the hook)
+Example CLI: < put-lifecycle-hook --heartbeat-timeout >
+Extend heartbeat timeout : < record-lifecycle-action-heartbeat >
+You can complete the lifecycle : < complete-lifecycle-action >
+48h is MAX WAIT state, irrespective of hearbeat
+** if timeout expires - default behaviour
+- CONTINUE ( asg will continue, assuming all went ok )
+- ABANDON ( asg will terminate instance)
+** spot instances
+You can use lifecycle hooks with spot instances BUT
+they will not stop them from being terminated due to price change 
+** usecases
+: can you run lifecycle hook from EC2? yes!
+- create lifecycle hook on ASG
+- create CW Event to listen for it
+- CW Event triggers lambda
+- lambda triggers SSM Run command on an EC2
+- EC2 sends signal to ASG to complete the lifecycle hook with either CONTINUE or
+  ABORT signal
+
+: can you control size of the ASG by the size of SQS? yes!
+- run script on EC2 that collects ApproximateNumberOfMessages from SQS & number
+  of instances in ASG
+- calculate number of items per instance & send that as a data point to custom
+  metric
+- create an alarm on top of that custom metric
+- create simple scaling policy based on that alarm
+- make sure that instances that are currently processing items send an api call
+  to [ suspend scale in actions or enable protection from scale in ]
+** termination policies
+: Default
+taking into account 'protected from scale-in'
+- balance AZ
+- keep on-spot / demand composition ( launch templates only )
+- oldest launch template/configuration
+- closest to the next billing hour
+- random
+** update policy
+- if you want the update the underlying EC2 instances, you have to define update
+  policy
+: AutoScalingRollinhgUpdate
+define min runn & batch size
+: AutoScalingReplacingUpdate 
+it will create new asg ! think immutable 
+: AutoScalingScheduledAction
+** deployment 
+- there is a tight integration with the CodeDeploy & ASG
+- you can define deployment group that has an ASG
+- when new instance is created in the asg, the CD will automatically deploy last
+  working version of the code 
+- if there is a scale-out during deployment, newly created instance will have
+  OLD version of the code ( because the latest haven't been confirmed to be a
+  working deployment ). Solution: suspend scale-out processes during deployment
+
+* AWS Direct Connect
+Allows you to connect on-prem to AWS wihtout internet!
+Can take up to 72 hours to provision it ( so if you need quick setup, this is
+not a solution)
+Why:
+- faster transfer, because you have direct link
+- cheaper, if you transfer tons of data
+* AWS Organizations
+- Policies override the IAM policies
+- account can only be part of one org / OU at the same time
+- OU can be a  member of only one OU
+- you cannot set MA from master account programmatically
+- Service Control Policies can be attached to root/OU/single account
+- attaching empty SCP will work the same as an empty IAM policy-> DENY ALL
+* BLUE / GREEN
+- use R53 & DNS change
+- ASG -> launch configuration swap ( change LC, double the size of the group,
+  reduce to original size...it will remove instances with the old config)
+- ELB 
+  : modify listener
+  : point at two 'target groups'
+  : assign weights to each target (just like canary in API gateway)
+  ( modify the listener forwarding options -> point @ 2 target groups && assign 'weight')
+* CLOUDSEARCH
+use for free text searching / autocomplete / highlighting
+fully managed: it stores data to be searched & manages search instances that will handle queries
+how to set up:
+- create a search domain containing data
+- configure search fields ( indexes )
+- upload data for indexing
+- submit search requests from your website / application
+
+* CLOUDFORMATION
+https://docs.aws.amazon.com/codedeploy/latest/userguide/integrations-aws-auto-scaling.html#integrations-aws-auto-scaling-behaviorRsOMATION
+** status codes
+UPDATE_ROLLBACK_FAILED
+: after failed update, rollback is attempted & it failed too
+: you can continue rollback -> you will have to resolve issues first!
+: you can contact customer service to help restore the stack
+: you can skip resources -> NESTED_STACK_NAME.ResourceName
+#+begin_src 
+aws cloudformation continue-update-rollback --stack-name MyStack --resources-to-skip MyNestedStack.myAsg
+#+end_src
+Reasons why:
+1) you deleted resource outside of CF
+2) you went over service limit
+
+** Deployments
+- Puppet -> good for long lifecycle apps that will require updates / patches
+- OpsWorks -> CF can create OW specific resources.
+Example:
+ AWS::OpsWorks::Stack
+ AWS::OpsWorks::Instance
+- ElasticBeanstalk
+ good for short lifecycles, where we throw away environment with each deployment
+ doesn't allow as much configuration as OpsWorks do
+
+** Wait Condition
+- you can hit signed url to send POST message with the SUCCESS / FAILURE
+signal
+
+- best practice
+ if creating EC2, use Creation Policy instead of Wait Condition
+ use wait condition to wait for EXTERNAL resources, example: On-Prem instances
+- DependsOn & Wait Condition
+ use it to make the timeout clock start running only after resource is created
+Example: 
+wait on EC2, wait condition timeout is 100s,
+clock will start only once EC2 is created ( but still getting ready )
+
+*** Wait Condition Example
+#+BEGIN_SRC bash
+   MyWaitCondition
+     Type: 'AWS::CloudFormation::WaitCondition'
+     DependsOn: 'MyInstance' #(we are breaking best practice, use CreationPolicy instead)
+     Properties:
+       Handle: !Ref MyWaitHandle
+       Timeout: 300
+       Count: 1
+
+   MyWaitHandle:
+     Type: 'AWS::CloudFormation::WaitConditionHandle'
+#+END_SRC
+*** cfn-signal, wait condition example
+#+BEGIN_SRC bash
+   #...0 is result, -r result msg
+   '/opt/aws/bin/cfn-signal -e 0 -r \"Instance creation complete\" ",
+   {
+     !Ref: "MyWaitHandle"
+   }
+#+END_SRC
+*** cfn-signal, creation policy example
+#+BEGIN_SRC bash
+  #...
+  UserData: !Base64
+      'Fn::Sub': |
+        #!/bin/bash
+        export PATH=~/.local/bin:$PATH
+        apt-get update
+        apt install python-pip
+        pip install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+        # $? === send signal based on exit status of the last executed command
+        /usr/local/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource myec2instance --region ${AWS::Region}
+
+#+END_SRC
+
+** Creation Policy
+- will stop resource from going into COMPLETE status until all signals
+are received
+- use CLI or helper scripts to send signals back to CF
+- you can nest Creation Policy inside of Wait Condition
+- best practice
+: use with EC2's & ASG's
+
+*** creation policy example
+#+BEGIN_SRC bash
+   MyWebServer:
+     Type: 'AWS::AutoScaling::AutoScalingGroup'
+     Properties:
+       AvailabilityZones: !GetAZs ""
+       LaunchConfigurationName: !Ref: 'MyLaunchConfig'
+       MinSize: 3
+       MaxSize: 4
+       LoadBalancerNames:
+     - !Ref 'MyLoadBalancer'
+     CreationPolicy:
+       ResourceSignal:
+     Timeout: 'PT15M'
+     Count: 3 # default is 1, so its an optional arg
+#+END_SRC
+*** cfn-signal
+#+BEGIN_SRC bash
+/opt/aws/bin/cfn-signal -e $?
+   --stack Ref: 'MyStack'
+   --resource MyWebServer
+   --region Ref: 'AWS::Region'
+#+END_SRC
+** Helper Scripts
+: cfn-init
+- Required params: [--stack, --resource]
+- reads Metadata of resource
+- helps install software
+- use instead of User Data
+
+: cfn-signal
+- Required params: [--stack, --resource]
+- use to signal that resource is ready
+
+: cfn-hup
+- runs daemon that detects changes in metadata ( checkes every 15 min by default)
+- configure stack & region for daemon in a file : /etc/cfn/cfn-hup.conf (
+  required )
+- set actions in hooks file : /etc/cfn/hooks.d/cfn-auto-reloader.conf
+Example: 
+have a cfn-init to set up instance & install software using metadata.
+When metadata changes,  cfn-hup will detect changes & rerun cfn-init script ( which
+will run updated metadata )
+
+: cfn-get-metadata
+- gets metadata for given stack / resource ( and outputs it )
+
+** Stack Policy
+- json policy (like iam)
+- by default all updates on all resources are allowed
+- the moment you create a stack policy, all resources become protected
+- you can  have only one stack policy attached to a stack, BUT one policy
+can have multiple STATEMENTS
+- you can use overriding stack policy to update protected resource (
+temporary policy, set via cli / console )
+
+*** example policy
+#+BEGIN_SRC bash
+   Statement:
+     Effect: 'Allow'
+     Action: 'Update:*'
+     Principal: '*'
+     Resource: '*'
+#+END_SRC
+** Update Policies
+Issue: ASG launch configs can't be updated, how do we update underlying
+instances & launch config?
+- Valid Resources that can use it
+: [ASG, Elasticache::ReplicationGroup, Elasticsearch::Domain, Lambda::Alias]
+
+- There are 3 policies:
+: AutoScalingReplacingUpdate 
+Will replace old ASG with a new ASG
+#+begin_export bash
+UpdatePolicy:
+  AutoScalingReplacingUpdate:
+    WillReplace: 'true'
+#+end_export
+: AutoScalingRollingUpdate
+#+begin_src bash
+UpdatePolicy:
+  AutoScalingRollingUpdate:
+    MaxBatchSize: 4
+    MinInstancesInService: 1
+#+end_src
+: AutoScalingScheduledAction
+ScheduledAction helps you set min/max size of the ASG on schedule (cron)
+** export values ( cross stack references )
+- It's region locked, ie: Names have to be unique within region
+- You can't delete stack that has it's output referenced by other stack
+- use Outputs section to export value
+#+begin_src 
+Outputs:
+  VPC
+    Description: Reference VPC
+    Value: !Ref VPC
+    Export:
+      Name: ProdVPC
+#+end_src
+** drift detection
+CF can detect drift & will show you the differences
+You can use the detected drift to update the template
+** nested stacks
+#+begin_src 
+Type::AWS::CloudFormation::Stack
+Properties:
+  #required
+  TemplateURL: String
+  #optional
+  NotificationARNs: 
+    - String
+  Parameters:
+    Key : Value
+  TimeoutInMinutes: Integer
+#+end_src
+** metadata
+you cannot update only metadata ie: you have to update/add/remove resources 
+in order to update metadata. 
+** custom resource
+- runs every time when CF events happens
+: Create
+: Update
+: Delete 
+- includes service token ( where CF sends requests to eg: Lambda ARN - must be
+  same region as stack) 
+- most of the time, uses lambda ( but doesn't have to !)
+- use cases
+: aws resource not yet supported by CF
+: on-prem resource
+: emptying S3 bucket before deleting it
+: fetch an AMI id
+- returns SUCCESS or FAILURE to provided pre-signed URL
+** deletion policy
+- Retain 
+: dont delete resource
+- Snapshot 
+: only for EBS,ElastiCache Cluster & Replication Group, RDS Instance & Cluster, Redshift cluster
+- Delete
+: default for all EXCEPT RDS Cluster ( not rds instance ~)
+
+remember S3 needs to emptied before it can be deleted
+** termination protection 
+- protects THE STACK from deletion
+** inline lambda
+- you can define lambda code inside template using ZipFile: | operator
+- max 4000 chars
+- no dependencies allowed 
+** lambda from s3
+- if you want to update lambda, you have to
+: change zip file name  ||
+: change bucket ||
+: enable versioning on S3 && provide S3ObjectVersion
+* CLOUDFRONT
+global content delivery network
+great for serving static data to users globally
+example:
+user -> route53 -> cloudfront 
+if (static content) -> s3 bucket
+if (dynamic content)-> elb -> server 
+* CLOUDWATCH METRICS
+- can't aggregate across dimension for custom metrics
+- can only have max 10 dimensions per metric
+- data points recorded every 5 min ( by default )
+- cannot be deleted, expire after 15 months
+- [Name, Namespace, 1-10 Dimensions]
+- CW Statistics: [Average, Sum, Minimum, Maximum, SampleCount]
+  : Statistics are aggregation of metrics over time
+- CW Periods: define time period used in CW Statistics
+** terminology
+: Dimension
+key-value pair. Max 10 dimensions per metric. Example: ImageId
+
+: LogEvent
+activity being reported. Has a timestamp & message 
+
+: LogGroup
+grouping of LogEvents from the same source
+
+: MetricFilters
+runs pattern queries on logs & publishes hits to custom metric
+
+: Retention Policies
+how long the data is kept
+
+: Log Agent
+runs on EC2 instance & publishes Log
+** custom metrics
+- install CW Logs Agent && configure metric filter on the log group
+: FilePattern, MetricName, Metric Namespace, Metric Value
+: Example: '404', ContentNotFound, EC2Space, 1 ( value for each instance of 404 we found )
+- install CW Unified Agent && it will send a ton of custom datapoints to metrics
+- send datapoints via cli using lambda or shell commands on cron
+HIGH RESOLUTION METRICS (available only to custom metrics)
+(detailed metrics are -> every 1 min, standard -> 5 min, high resolution -> 1s-60s)
+- graniularity is between 1min to 1second
+- >60s => 3 hours, 1min = 15 days, 5min = 63 days, 1hr = 15 months
+* CLOUDWATCH ALARMS
+
+- alarm can trigger:
+: ASG action ( select asg group & action )
+: ECS action ( select cluster )
+: EC2 action ( if alarm is on top of EC2 per-instance metric )
+: SNS topic
+
+** step scaling policy vs simple policy
+- step scaling policy continually evaluates the alarm, even if scale in/out is
+in progress 
+: Example: it will continue to scale up/in as long as alarm is being breached
+- you can have multiple scaling policies
+- if two policies trigger at the same time, precedence is given to policy that
+will provide HIGHER capacity
+: Example: policy1 increases capacity by 2, policy2 by 4. Policy2 is implemented
+: Example2: p1 decreases by 2, p2 by 4. p1 is implemented!
+
+* CLOOUDWATCH EVENTS
+- event can trigger directly (no need for lambda as middleman)
+: ecs
+1) run task ( fargate && ec2 )
+: ec2 
+1) take snapshot
+2) reboot / stop / terminate instance
+: inspector
+1) run assessment template
+: ssm
+1) RUN Command
+2) automation document
+* COST ALLOCATION TAGS
+- aws tags can only be activated in Billing & cost dashboard
+- once you enable them, they will be applied automatically to every NEW resource ( it will not apply retrospectively )
+: (aws: createdBy)
+- takes up to 24 hours to show up in the billing & cost dashboard
+- user ( User Defined Cost allocation tags ) can create tags as well ( user: tagname )
+: for example, if I define ‘Environment’ as a cost allocation tag, & activate it & create EC2 with that tag, that ec2 will be included in billing report that i can filter by tags 
+* CODECOMMIT
+- faq: https://aws.amazon.com/codecommit/faqs/
+
+- you can set up notifications && triggers on changes made to branch/PR
+: SNS && Lambda are valid targets 
+
+- you can set up webhooks
+: create SNS topic that points at HTTP endpoint with URL for the webhook,
+ set up trigger on CC to send notification to topic
+
+- you need port 22(SSH) or 443(HTTPS) to communicate with CC
+
+- repos are encrypted at rest automatically using KMS
+
+- cross account access is possible using IAM 
+* CODEBUILD
+- uses Docker containers to run builds
+: you can provide your own docker image or use managed one
+- max timeout is 8 hours 
+- you can define VPC CB will access 
+- you can define custom env variables
+- you can push logs to CW && S3
+- artifacts are encrypted by default using KMS
+- namespace in S3 is based on build_id
+- build state change: [FAILED, IN_PROGRESS,STOPPED,SUCCEEDED]
+- if any phase fails, all subsequent phases will not trigger
+- if command fails, FINALY block will execute
+- if any code in 'command' && 'finally' block fails, whole phase fails
+- if you get param from SSM Param Store, remember to give CB permission to
+  access SSM STORE
+- if you define buildspec via cli, it has to be a single string with newline &
+  whitespace 
+- you dont have to define buildspec.yml ->  you can set BUILD phase commands in
+  AWS console 
+** BUILDSPEC.YML
+VERSION: 0.2
+
+RUN-AS: LINUX-USER-NAME
+
+ENV:
+  VARIABLES:
+    KEY: "VALUE"
+    KEY: "VALUE"
+  PARAMETER-STORE:
+    KEY: "VALUE"
+    KEY: "VALUE"
+  EXPORTED-VARIABLES:
+    - VARIABLE
+    - VARIABLE
+  SECRETS-MANAGER:
+    KEY: SECRET-ID:JSON-KEY:VERSION-STAGE:VERSION-ID
+  GIT-CREDENTIAL-HELPER: YES
+
+PROXY:
+    UPLOAD-ARTIFACTS: YES
+    LOGS: YES
+            
+PHASES:
+  INSTALL:
+    RUN-AS: LINUX-USER-NAME
+    RUNTIME-VERSIONS:
+      RUNTIME: VERSION
+      RUNTIME: VERSION
+    COMMANDS:
+      - COMMAND
+      - COMMAND
+    FINALLY:
+      - COMMAND
+      - COMMAND
+  PRE_BUILD:
+    RUN-AS: LINUX-USER-NAME
+    COMMANDS:
+      - COMMAND
+      - COMMAND
+    FINALLY:
+      - COMMAND
+      - COMMAND
+  BUILD:
+    RUN-AS: LINUX-USER-NAME
+    COMMANDS:
+      - COMMAND
+      - COMMAND
+    FINALLY:
+      - COMMAND
+      - COMMAND
+  POST_BUILD:
+    RUN-AS: LINUX-USER-NAME
+    COMMANDS:
+      - COMMAND
+      - COMMAND
+    FINALLY:
+      - COMMAND
+      - COMMAND
+REPORTS:
+  REPORT-NAME-OR-ARN:
+    FILES:
+      - LOCATION
+      - LOCATION
+    BASE-DIRECTORY: LOCATION
+    DISCARD-PATHS: YES
+    FILE-FORMAT: JUNITXML | CUCUMBERJSON
+ARTIFACTS:
+  FILES:
+    - LOCATION
+    - LOCATION
+  NAME: ARTIFACT-NAME
+  DISCARD-PATHS: YES
+  BASE-DIRECTORY: LOCATION
+  SECONDARY-ARTIFACTS:
+    ARTIFACTIDENTIFIER:
+      FILES:
+        - LOCATION
+        - LOCATION
+      NAME: SECONDARY-ARTIFACT-NAME
+      DISCARD-PATHS: YES
+      BASE-DIRECTORY: LOCATION
+    ARTIFACTIDENTIFIER:
+      FILES:
+        - LOCATION
+        - LOCATION
+      DISCARD-PATHS: YES
+      BASE-DIRECTORY: LOCATION
+CACHE:
+  PATHS:
+    - PATH
+    - PATH
+** BUILDSPEC SUMMARY
+- ENV: [VARIABLES, PARAMETER-STORE, EXPORTED-VARIABLES, SECRETS-MANAGER,
+  GIT-CREDENTIAL-HELPER]
+- PHASES: [INSTALL, PRE_BUILD,BUILD,POST_BUILD]
+: EACH PHASE HAS [RUN-AS, RUNTIME-VERSIONS, COMMANDS, FINALLY]
+- SECTIONS: [ENV, PROXY, PHASES, REPORTS, ARTIFACTS, CACHE]
+: ARTIFACTS [FILES, NAME, DISCARD-PATHS, BASE-DIRECTORY,SECONDARY-ARTIFACTS->FILES..]
+: CACHE [PATHS]
+** environment var precedence
+- start build operation call ( CLI call where you override env's)
+- build project definition ( when project is first created )
+- buildspec.yml template ( uploaded spec )
+** you can export env but only if they are available during the build 
+- final value is set after post_build phase
+- you can not export ssm secrets & secretsmanager secrets (doh!) && envs that
+  start with aws_
+** behaviour
+- IF BUILD stage runs ( even if it FAILS )
+stages:
+- POST-BUILD && UPLOAD_ARTIFACTS will RUN ( so you can troubleshoot the issues )
+- you can use CODEBUILD_BUILD_SUCCEEDING var to evalute in POST_BUILD if buid
+  worked (1) or faild (0)
+** supported docker images
+- Ubuntu
+- Windows SErver Core 2016
+- Amazon Linux 2
+(NOT RHEL!!!!!!!)
+* CODEDEPLOY
+- you have to run a CD agent on each instance, they poll the CD for work
+- CD tells instance where the code is in s3 -> instances need role with access
+  to s3 to get code
+- CD doesn't provision resources, you have to do it yourself
+- you need appspec.yml file in the root of your code
+- you have access to environmental variables during deployment:
+[deployment group name & id, lifecycle name, deployment id]
+- you CAN'T SET your own env vars (unlike in codebuild)
+- you can use env var to make appspec.yml conditional. example: if 'prod' do
+  this else do that
+- CD has built in triggers that can invoke SNS
+- for most automation you will use CW events
+- there is no integration with logs, so you would have to install CW log agent
+  yourself on each instance
+- CD can work with on-prem, you would have to use iam user (for small number of
+  instances ) or iam role ( if you want to deploy at scale )
+- you can only tag on-premise instances in CodeDeploy (and in SSM)! ( think about it - you
+  can only add on-prem to CD, not CB or CC)
+- env variables available during deployment, they are local to each lifecycle event
+: APPLICATION_NAME
+: DEPLOYMENT_ID
+: DEPLOYMENT_GROUP_NAME
+: DEPLOYMENT_GROUP_ID
+: LIFECYCE_EVENT
+
+- you can set up alarm on DEPLOYMENT_GROUP
+: if triggered, it will fail the deployment
+: you can enable automatic rollback if alarm is triggered
+
+** hooks
+- EC2 hooks: [Applicationstop, Download, Beforeinstall,Install, Afterinstall, Runapplication, Verifyapplication]
+- Lambda Hooks: [Beforeallowtraffic,Allowtraffic, Afterallowtraffic]
+- ECS hooks: [Beforeinstall, Install,
+  Afterinstall,AllowTestTraffic,AfterAllowTestTraffic,BeforeAllowTraffic,AllowTraffic,AfterAllowTraffic]
+(most of those run lambda functions - they are all optional)
+- ELB hooks :
+  [BeforeBlockTraffic,BlockTraffic,AfterBlockTraffic,Beforeallowtraffic,Allowtraffic,Afterallowtraffic]
+** ALL ECS/Lambda deployments are BLUE/GREEN
+** You CANNOT use TAGS to add ECS / LAMBDA to deployment group!!!!!
+* CODEPIPELINE
+- artifacts encrypted by default at rest
+- one pipe per branch!
+- you can detect changes using: CW events || PipeLine itself ( polls on schedule )
+- minimum 2 stages ( first one HAS TO BE source stage ), all stage names must be unique
+- DEPLOY action providers:
+: AWS CodeDeploy, CloudFormation, Beanstalk, Service Catalog, ECS, ECS (blue/green), S3
+- pipe has stages, stages have action groups
+- action groups have
+: action provider [ S3, GitHub, CB, Jenkins, CD, CF, Beanstalk, Service Catalog, Lambda, ECR, CC]
+- each actions in a stage have a RUN ORDER ( the lower the sooner it will be
+  executed )
+- CUSTOM Actions require custom JOB WORKER (for example EC2 or some 3rd party app
+  running on server)
+Custom worker will
+: POLL the pipeline for work  
+: once the job is done, it will make an API call to pipeline with the result (using continuation token IF JOB FAILED)
+#+begin_src bash
+codepipeline:PutJobSuccessResult
+codepipeline:PutJobFailureResult
+#+end_src
+: those api calls require 'CONTINUATION TOKENS' 
+- CAPABILITY_AUTO_EXPAND is used when deploying CloudFormation NESTED stack
+* CODESTAR
+- you can create roles
+- you select a project template
+- integrates IDE, CC, CB, CD, CP, CW Metrics && Jira
+- configuration is stored in CodeCommit repo of the project
+: template.yml has the CodeStar config 
+* CONFIG
+: AWS managed rules eg. 
+cloudtrail-enables -> checks if CT is enabled for account(s)
+- YOU CAN modify aws managed rules ( they have a lambda underlying them)
+: Custom rules
+- YOU HAVE to define your own lambda for them
+- if you want to take remediation action on a rule, you have to 
+- REMEDIATION uses SSM Automation ( NOT lambda !!!! )
+- If you want to use Lambda:
+1) CAPTURE THE EVENT using CW !!! ( Config cannot trigger Lambda - Remember!!!)
+2) create lambda to execute that action ( StartLogging API in this example )
+
+- tracked: configuration, relationships, who did what on given resource
+- you can export configuration to json
+- you can track configuration changes over time & relationships between resources
+- you can send ENTIRE configuration to SNS topic ( you cannot send config for
+  individual resources )
+- you can use CW Events to react to INDIVIDUAL resource config changes
+- you can set rules for
+: all resouces ( eg: tagging strategy )
+: selected resource type ( S3 - eg: check if no public access allowed)
+- you can run config on every config change AND/OR on schedule
+- you can aggregate config in one account from other occounts && cross-region
+* DEFAULT METRICS BY SERVICE
+** codebuild
+- builds
+- duration
+- succeeded builds
+- failed builds
+** elb
+- unhealthy hosts
+- healthy hosts
+- avg latency
+- requests
+- HTTP/elb 5xx,4xx,2xx
+** ec2
+- CPU Utilization / Credit Usage / Credit Balance
+- Disk Reads / Read Operations / Writes / Write Operations
+- Network In / Out / PacketsIn / PacketsOut
+- StatusCheckFailed
+** asg
+- min/max/desired group size
+- In Service/ Pending / Standby / Terminating instances
+- Total instances
+* DISASTER RECOVERY
+RPO - restore point objective
+RTO - restore time objective
+- EBS - You cannot share automated snapshots across accounts
+
+- Backup & Restore - make regular backups
+- Pilot Light - keep critical part of your app alive in another region (eg: database)
+- Warm Standby - keep whole another stack up but at min size
+- Multi Site - keeps one or more full stack(s) up - the lowest rpo/rto but
+  highest cost
+
+- EFS to EFS backup ( across regions )
+: EFS -> S3 -> S3 CROSS REGION REPLICATION -> EFS
+- AWS Backup ( for EFS -> supports cross region NOW )
+- Route 53
+: use ListResourceRecordSet to list all records & export it
+: if you want to import record sets, you will have to write your own script
+you can do that because DNS records are standarized, 
+remember there is NO AWS functionality to import those records, you have to do
+it yourself
+
+** multi-region backups
+- S3 can be replicated across regions
+- keep ID's of AMI's in a param store & distribute across regions
+- you can have an automated process of making & backing up ebs's snapshots
+- you can build automation: spin up ec2's to make a backup of efs -> (to the same
+region/ because its in the same vpc )
+- AWS BACKUP
+: to manage backups of snapshots: EBS / RDS / EFS / DYNAMODB
+- AWS DataSync: you can replicate EFS-EFS cross region && cross accounts !
+* DYNAMODB
+- if you want to get only few attributes from an item use:
+: projection expression
+- you cannot query database if you dont have a composite primary key ( you have
+  to use scan - which is very inefficient )
+- bakcups and restores do not consume provisioned capacity
+- backups and restores work only within the region!
+- encryption at rest HAS TO BE enabled at table creation time
+- encryption at rest cannot be disabled !
+- uses AES-256
+- encrypts tables & Secondary Indexes
+- access to DynamoDB is controlled by IAM not username/password ( like in normal
+  db)
+- avoid indexing tables that are  under heavy write  activity
+- primary key = partition key + search key (optional)
+- supports autoscaling of throughput capacity
+
+** provisioned throughput
+: Read
+1 RCU = 1 strongly consistent read/second
+1 RCU = 2 eventually consistent read/second
+max item = 4KB ( round up to nearest 4k )
+
+if your secondary index gets 4 out of 6 attributes, you calculate your RCU based
+on 4 not 6 ( thats the benefit of SI's -> you get to work with smaller datasets)
+
+: Write
+1 WRU = 1 write/second 
+max item = 1KB
+
+** local secondary index
+- share throughput with parent table
+- shares partition key
+- can only be defined during table creation
+** global secondary index
+- you can have max 20 GSI's per table
+- has its own throughput ( you have to provision it yourself )
+- has different partition key
+- can be defined at any stage
+
+** access control
+- you can give access to table via Web Identity Federation
+: use Web Identity in IAM, specify identity provider ( eg. Facebook )
+** DAX
+- use if you need microsecond responses ( eg: online trading platform, or you
+  have hot items)
+- in memory cache
+- fast responses to eventually consistent reads
+- supports encryption
+- uses TCP port 8111 for communication
+** streams 
+- data lives up to 24hrs
+- streams have an endpoint ( just like DB endpoint )
+- steams are async so they don't impact performance of the table
+- streams can capture TTL operations ( automated deletions )
+
+* ELASTICACHE
+- Redis 
+: supports read replicas
+- Memcached
+: no read replicas
+- its a managed service, you can use SAM to deploy it
+* ELASTIC BEANSTALK
+** environment types
+- web server
+- worker ( good for long running tasks )
+: comes with SQS & SQS DLQ (queues)
+: can process jobs from queue or on schedule ( HAS FILE cron.yaml)
+** configuration
+: you can
+- enable X-Ray
+- stream logs from instances to S3 & auto delete with environment
+- pass in env params
+- attach IAM EB SERVICE role
+- attach ec2 key_pair & INSTANCE role
+- set up simple notification to email for important events 
+- set up managed updates & time window when they happen
+- define more custom metrics to be tracked 
+( You get EnvironmentHealth Custom Metric for FREE )
+- stream Health logs to CW logs
+- select VPC & subnets
+- create RDS DB from snapshot
+- configure RDS database ( engine, size of the instance, passwords)
+- you can add DB AFTER env has been created
+** cloudformation
+-   create EB using CF template
+Example:
+  Type:  AWS::ElasticBeanstalk::Application
+  ---
+  Type: AWS::ElasticBeanstalk::ApplicationVersion (points at source  - S3)
+  ---
+  Type: AWS::ElasticBeanstalk::ConfigurationTemplate ( asg/elb settings )
+  ---
+  Type: AWS::ElasticBeanstalk::Environment (environment settings)
+
+- USECASE:
+: you want to implement A/B deployments , you have serveral multi-tier apps with different infrustructure reqs
+: use CF to manage infrastructure, EB will manage versioning & app itself
+: EB cannot run multi-tier app -> its either a web server or a worker, thats  it
+** environment types
+- ELB & ASG, elastic IP
+- single instance, ASG ( min/max = 1), no ELB, elastic IP
+** deployments
+- blue / green
+Not natively supported. You can do it, but it's very manual.
+You would create a new environment & use Route53 to swap url when ready. 
+- all at once
+- rolling
+- rolling with additional batches
+- immutable ( creates temp asg, and then merges in if health tests pass )
+: MAX INSTANCES per region / per account = 20 ( contact customer service )
+** environment variables
+Order of precedence: 
+1) set in console / cli
+2) set in config
+3) set in .ebextensions
+** docker configuration (single)
+- supports building image during deployment ( thats why you include Dockerfile )
+- uses ECS under the  hood ( if region isn't supporting ECS, this option is not available)
+- Dockerfile is requried
+- Dockerrun.aws.json is OPTIONAL (version 1)
+** multicontainer docker configuration
+- uses ECS under the  hood ( if region isn't supporting ECS, this option is not available)
+- You cannot build your custom image during deployment, make sure image is uploaded to repo &
+  pulled from there ( NO Dockerfile )
+- Dockerrun.aws.json file is REQUIRED ( version 2 )
+- elastic beanstalk does NOT roll back failed multicontainer environments due to
+  a failed Amazon ECS stack
+** commands
+- you can run commands before application / web server has been set up
+** container_commands
+- runs after the web app file have been copied to 'staging area' but before it
+  has been deployed
+- supports 'leader_only' option ( runs a command only on a single instance - eg:
+  run database migration before deploying )
+* EC2 
+** hot backups
+hot backup happens when the volue is performing I/O operations.
+its recommended to flush the cache & pause IO operations
+if  you can't pause IO, you could UNMOUNT the volume, take a snap & remount
+** backups cli
+#+begin_src bash
+  aws ec2 create-snapshot ...
+  aws ec2 describe-snapshots ..
+  aws ec2 delete-snapshot ...
+#+end_src
+* ECS
+- IAM Roles: for instance && for task
+if you are using Fargate, there is no instance role to manage, because you don't manage EC's
+
+- Logs
+logs can be sent directly from Tasks -> no need to install AWS Log agent ( use
+logdriver )
+if you want logs from instance, install Log Agent 
+
+- Metrics
+there are Cluster level metrics available
+you can enable container 'insights' to get metrics for each container -> extra cost 
+
+- AutoScaling
+you can enable autoscaling policy for Service...but then you will need second auto-scaling
+policy for the underlying ASG ( there is no easy way to connect both - but it can be
+done)
+
+: AutoScaling with EB
+easier way to manage AS is to deploy containers in EB
+
+: AutoScaling with Fargate
+easy solution, as there is no EC's scaliing that needs to be managed
+
+- ECS cluster creates ASG and uses it to manage the number of tasks
+ 
+- When instance is created it bootstraps with a CLUSTER_NAME var being stored in /ect/ecs/ecs.config
+ 
+- Container Agent registers instance with the cluster using CLUSTER_NAME var
+ 
+- Container Agent runs in a docker container on each instance ( use docker ps to list it )
+ 
+- Task can have MULTIPLE cointainers (eg: php app && httpd )
+
+- Instance can have MULTIPLE tasks
+ 
+- ECS Services manage tasks ie. What tasks should run, and how many of them
+ 
+- You can link ELB with an ECS Service
+ 
+- you can have Service of type DAEMON -> runs a single task on each instance (
+  think CloudWatch Agent ) or Replica
+ 
+- Deployments: Rolling(YES! turns out there is rolling option for ECS service !
+  It does NOT use CodeDeploy! ) or Blue/Green ( managed by CodeDeploy )
+ 
+- Service takes in [task definition, Load Balancer, type of service (replica/daemon), 
+deployment type, task placement templates (how to spread the tasks across instances ), AutoScaling, VPC]
+ 
+- You can modify service ( as in edit )
+ 
+- You can use ALB (not classic / network ) to dynamically forward ports to your  containers / tasks
+ ( make sure to update the security group to allow traffic on all ports coming from ALB )
+ 
+- You can create new revision of the task when updating it ( you cant just edit the same version )
+ 
+- YOU CANNOT ADD LOAD BALANCER to existing Service -> you will have add it during creation of service
+
+- Fargate
+: Task definition from ECS is different from task definition for Fargate ( ie. You cannot reuse them ) 
+* ECR
+- Access to ECR is managed by IAM => if there is a problem check access ( common exam question )
+- CLI COMMANDS
+: linux -> $(aws ecr get-login –no-include-email –region eu-west-1) / docker push / docker pull  
+: windows -> Invoke-Expression -Command (Get-ECRLoginCommand -Region eu-west-1)
+- Log in to ECR - > build image -> tag image -> push image to ECR 
+( log in first, so if that fails, you don’t waste time building)
+- Instance role has to have access to ECR in order to pull image ! ( not service role, Instance role !!! )
+
+* EFS
+- you can create EC2 replication clusters to backup data
+- if you have VPC peering available, you can have EFS from 2 regions connected
+  to a single replication cluster
+- use VPC Peering to connect EC2 from region1 to EFS in region2 (you can use
+  that EC2 to replicate EFS)
+* Elasticsearch ( ES )
+- uses
+: clickstream
+: indexing
+: search functionality
+
+- you have to define the server ( its not fully managed )
+- it gives you Kibana & Logstash integration
+- you have to create domain & send you data there
+- use case
+searching for individual item in Dynamo is inefficient because we have to use
+'scan' 
+: DynamoDB -> streams -> lambda? -> ES with API -> query api, find index of an item -> find item in Dynamo
+* ELB
+- elb can store access logs in S3 bucket ( its disabled by default )
+- Elastic Map Reduce or Splunk can help you filter out the logs for info you need
+- ALB (and api gateway) support ipv6
+- ELB CANNOT handle UDP traffic!
+- ALB can trigger lambda
+- can have multiple SSL Certs
+* GLUE
+- used for ETL operations ( Extract Transform Load ) 
+- use it if you want to prepare data for analytics
+- use cases
+: queries against s3 data lake
+: get data from s3, enrich it by joining data from RDS, push logs and notification to CW ->
+-> send data to redshift , run reports in QuickSight
+* GUARDDUTY
+- can monitor multiple accounts
+- monitors all accounts & network activity around them
+- findings are sent automatically to CW events
+- can save findings to S3 
+- can whitelist & blacklist ip addresses
+- example: it will detect trojans, port scans etc
+- use CW Events to react to findings
+
+* HEALTH
+- Personal Health Dashboard ( for you account )
+- Service Health Dashboard ( global )
+- you can set up Events for personal event's ( global events are filtered out -
+  so you get only events related to your account )
+- AWS Support Business / Enterprise clients can use Health API
+- global events are listed  only in dashboard and have 'operational' keyword in
+  them 
+* IAM
+- NotPrincipal
+: use it only with 'Deny' -> if you use 'Allow', it will allow ALL but the listed users/arn's
+- you cant attach multiple roles to a single instance
+- instance profile is a container for a role & is used by an instance
+- app running on an instance gets security credentials from the role using
+  instance metadata item < iam/security-credentials/role-name >
+- creds from a role are temporary & are rotated automatically
+- to attach a role to an instance, USER has to have a permission to do it
+: {"Effect": "Allow", "Action":"iam:PassRole", "Resource":"*"}
+* INSPECTOR
+- used for examining security in applications ! ( running on EC2 )
+- can be integrated with your devops processes
+- checks the possible vulnerabilities in your EC2's
+- Host assessment requires Inspector Agent on instance to be running
+  (installation can be automated using ssm Run Command)
+- EC2 Instance roll should allow 'ssm:RunCommand'
+(SSM agent uses RunCommand to install Agent)
+- Host assessment checks for CVE's (Common vulnerabilities and exploits), Host
+  hardening (CIS Benchmarks ), and best practices 
+- use inspector for veryfying golden AMI's
+- you can schedule & trigger via CW Events assessments
+- Inspector will NEVER run instance for you, it needs to be already running 
+* JENKINS
+- use cases, Jenkins :
+: as a build stage ( CodeBuild )
+: as an orchestrator ( CodePipeline )
+: with Lambda
+: with CloudFormation
+
+- plugins:
+: Amazon EC2 -> jenkins will provision a fleet of ec2's & discard them when not used
+: AWS CodeBuild -> jenkins will send builds to CodeBuild & run them there ( no need to provision ec2)
+: Amazon Elastic Container Service -> jenkins will build on ECS 
+: AWS CodePipeline -> integration with CodePipeline
+: Artifact Manger on S3 -> helps you store artifacts on S3
+* KINESIS
+up to 5 consumers per shard ( best practice: don't go over 2!)
+up to 2mb read per second per shard
+up to 10mb returned in a single call
+if you get 10mb in a single call from a shard,  not query for next 5 seconds ( it will
+throw exception )
+- resharding doesn't stop the stream,   continue to write / read
+- cli: < updateshardcount >
+* KINESIS ADAPTER
+- recommended way of consuming DynamoDB streams
+- allows you to use KCL (Kinesis Client Library) to consume DynamoDB streamed data
+* LAMBDA
+will retry 2 times before discarding event
+if you want to examine those events, send them to sqs/sns -> deadletterqueue
+can be triggered by:
+- S3
+- CloudTrail
+- Api Gateway
+- CW Logs Subscription
+- CW Events
+- DynamoDB
+- SNS
+- SQS
+- Kinesis Stream
+- CodeCommit!!!
+- ALB
+** security
+- you can pass in env params to lambda, they can be encrypted
+- encryption [ KMS key, SSM Param Store, SSM Secrets Manager ]
+- use SDK to decrypt params at runtime
+
+* LAMBDA: WHAT CAN TRIGGER IT!?
+- s3
+- dynamodb tables
+- kinesis streams
+- sns
+- sqs
+- api gateway
+- ALB ( not classic or nlb )
+- cloudfront
+- cw events
+- cw logs subscription
+- codecommit
+* LICENCE MANAGER
+- you can associate licences with AMI or individual resources
+ 
+* MACIE
+data analysis (s3) for pii ( personally identifiable information )
+monitors access to data
+generates alerts when risk detected
+runs only in n.virgia(east) & oregon(west)
+
+* MIGRATION SERVICES / ON PREM STRATEGIES
+1)   you can download Linux2 images for varius VM vendors ( you need to create seed.iso first)
+2)   import / export vm's from / to ec2
+#+begin_src bash
+  aws ec2 create-instance-export-task
+#+end_src
+3) application discovery service
+collects info on running processes & network connections & performance
+4) database migration service
+live replication
+on prem -> aws , aws->aws, aws->onprem
+5) server migration service
+live replication
+* Multi AZ
+  $$$ NOT ENABLED BY DEFAULT §§§
+
+- EFS / ASG / ELB / Beanstalk
+: you have to enable multi AZ ( select the subnets )
+- RDS / ElastiCache 
+: you have integrated support for replicas located in another AZ
+- Aurora 
+: it's multi-AZ by default (DATA is stored across many AZ's)
+: MASTER (database itself) can have failover in another AZ ( just like RDS )
+- Elasticsearch
+: you have to enable multi master to have multi-AZ
+- Jenkins
+: you have to enable multi master to have multi-AZ
+
+§§§ MULTI-AZ BY DEFAULT §§§
+  - Aurora
+- S3 (Except One-Zone-Infrequent-Access)
+- DynamoDB
+- All of AWS's managed services
+* Multi Region
+- Secrets Manager  / SSM Param store -> you can pass in secret to ECS task (
+  container definition ) from different region ( as long as its the same account)
+- DynamoDB Global Tables ( enabled by streams )
+- AWS Config ( Aggregator - multi region && multi account )
+- RDS Cross Region Read Replicas ( used for reads & DR )
+- Aurora Global Database ( same as RDS - one node is master, other is for read
+  only / DR) ( not multi-master -> its multi AZ/same region -> read/write nodes)
+- EBS / AMI / RDS snapshots can be copied to other regions 
+- VPC Peering - allows private traffic between regions
+- Route53 is multi region by default as it's using global DNS network
+: can issue health checks
+: endpoint ( webserver, page etc - just like elb )
+: healthcheck of healthcheck ( calculated healthcheck )
+: alarm status ( using CW )
+- S3 cross region replication
+- CloudFront @Edge locations ( theres more edge locations than theres regions )
+- Lambda @Edge ( A/B testing )
+- StackSets
+: you can deploy across accounts & regions
+: you can delete selected stacks from the set
+- Sending logs across regions/accounts can be achieved only using Kinesis
+* MULTI ACCOUNT
+- You can share CMK Keys from KMS across accounts 
+Note!
+Default CMK (that uses KMS) cannot be used by other accounts. This key can only be used by the account that created it! )
+- IAM roles can be assumed across accounts ( uses STS to achieve that )
+- CodePipeline can trigger services across accounts ( CD for example )
+- AWS Config 
+- CloudWatch Event
+: create Event Bus && other accounts can read from that bus
+- CloudFromation StackSets
+- Log Destination ( has Kinesis Streams under it )
+: can be created in different account / region
+: you can stream logs into log destination
+: FireHose can receive from log destination
+* NETWORK
+** NAT
+- you have to put in a public subnet
+- you have to associate Elastic IP with it ( and you cannot change it! )
+- you cannot associate Security Group with it
+- you can control traffic using ACL tables
+- does NOT support ipv6 ( only ALB does as far as I can tell & route 53 )
+
+* ORGANIZATIONS
+: AWSServiceRoleForOrganizations
+Only AWS Organizations can assume this role
+It's used to create service-linked roles for accounts in Org
+AWSServiceRoleForOrganizations service-linked role is primarily used to only
+allow AWS Organizations to create service-linked roles for other AWS services.
+This service-linked role is present in all organizations and not just in a
+specific OU
+
+: OrganizationAccountAccessRole
+This role is created automatically when new account is created from Org
+It allows access the new member account
+* ROUTE53
+- re:Invent ( really good explanation of what DNS / Hosted Zone / CNAME / Alias is)
+https://www.youtube.com/watch?v=AAq-DDbFiIE
+
+- has option: weighted round robin which enables canary deployments
+- A record points at ipv4
+- AAAA record points at ipv6
+
+- CNAME record points at another record (domain)
+: Example
+www.example.com(cname) -> example.com(root domain)
+ftp.example.com -> example.com
+
+- you CANNOT create CNAME for root domain (apex), use Alias instead to point at
+  the resource
+: www.example.com
+#+begin_src 
+example.com is root domain
+www. is a subdomain
+#+end_src
+
+** routing policies
+- failover
+- geolocation ( location of the user 
+- geoproximity ( location of user && location of data )
+- multivalue ( random allocation )
+- weighted routing ( for a - b testing )
+* SSO ( SINGLE SIGN ON)
+it is not saml based!
+integrates with aws organizations & microsoft ad ( active directory )
+fully managed & can be used for multiple accounts
+  create users ( email & name - thats all you need!)
+  manage user permissions 
+  manage identity store in aws
+
+it helps you:
+- manage users & access
+- monitor access activity
+- it's highly available & managed
+* ON PREMISE STRATEGIES
+- VM Import / export ( migrate your on-prem directly to EC2 - or create DR
+  recovery site for your on prem images )
+- AWS Application Discovery Service
+: gathers information about your on-prem app & helps you plan migration
+: shows you server utilization & dependency mappings
+: you can orchestrate migrations in AWS Migration Hub
+- Server Migration Service ( SMS )
+: allows incremental replication of servers to aws
+- AWS Database Migration Service ( DMS )
+: you can replicate on-prem to AWS, vice versa, OR aws->aws ( from say RDS MySQL to DynamoDB )
+
+* OPSWORKS
+- chef automate ( provisions server for chef )
+- puppet enterprise (provisions server for  puppet )
+- can manage on-prem instances
+- design layers that perform different functions
+instances can be 24/7, time or load based ( you have to define max in advance )
+  have a mix of instances
+- Chef 12 allows Windows instances
+- Stack can NOT have mixed instances (linux && windows)
+- create order : [ Stack -> Layer -> Instance -> App -> Deploy App]
+- you can deploy new app to subset of instances or all at once
+- you can run recipes manually or via lifecycle events
+- you get set of custom metrics for linux stacks (standard only metrics for windows)
+- CloudTrail is enabled by default?
+- integrated with CW Logs for all events
+- Chef records logs for each lifecycle event on the instance itself
+- Linux based STACKS can have Ganglia master layer -> used for collection &
+  display of detailed monitoring data for your stack instances
+- supports CLI, SDK
+- unlinke BeansTalk, OpsWorks does NOT apply security patches to your instances automatically (only during initial setup)
+: if you want to update, replace instances ! If you have Chef 11 use Update Dependencies command
+** lifecycles
+- Setup
+: afer instance finishes booting
+: you can trigger this event manually 
+: includes Deploy event
+
+- Configure
+: affects ALL STACK instances
+: if multiple events triggered, OpsWorks will process only the last one
+it will have info on other events, so you can process all with one call
+: triggered by -> [
+1) instance goes online/offline
+2) elastic IP is added/removed from an INSTANCE
+3) ELB is added/removed to a LAYER
+
+- Deploy
+: runs after Setup or if you trigger manually
+
+- Undeploy
+: runs after you delete app or trigger manually
+
+- Shutdown
+: runs before instance is actually terminated
+: used for cleanup
+: OpsWorks wail wait for attached ELB to drain connections before shutdown is started
+: default timeout is 120 seconds ( change layer config to update )
+** deployment strategies
+- manual (all at once, or just selected ones)
+- rolling
+- blue/green
+- saves up to 5 last versions ( if you want more, use S3 and versioning )
+* ORGANISATIONS
+- there is master account & member accounts
+- allows CONSOLIDATED billing ( cheaper because you get volume discounts )
+- allows you to create member accounts ( using api - so you can automate the
+  process )
+- member accounts can be controlled using Service Control Policies  
+
+* RDS
+- use EngineVersion property to update the engine
+- Read replicas are SYNC in terms of backing up of data from master
+- Up to 5 Read replicas per master
+- Snapshots frees IO ( thats why they are made on Read Replicas - if there is
+  one)
+- Aurora and RDS Multi-AZ have both AUTOMATED failover, normal RDS + RR don't (
+  manual failover)
+* S3
+- inteligent tiering
+: use it when you don't know how often your data will be accessed
+amazon will use ML to determine how to tier the data based on the access 
+patterns - this will save you money
+
+- vpc endpoint 
+: use it to connect to S3 from private vpc using vpc endpoint
+using this endpint will omit public internet & allow you to directly connect to S3
+
+* SECURITY
+** security tokens / session
+- STS generates the temporary tokens / credentials used by sessions
+- you can call STS using those api's:
+------ CORPORATE IDENTITIES --------
+: GetFederationToken
+1) works within an account
+2) sessions up to 36 hours
+3) no - MFA
+: AssumeRole
+1) works across accounts
+2) session up to 1h
+3) yes - MFA
+4) requires AWS creds
+5) requires custom proxy
+: AssumeRoleWithSAML
+1) works across accounts
+2) session up to 1h
+3) doesn't require AWS creds
+4) uses off-the-shelf software ( ADFS, Shibboleth...)
+
+------ SOCIAL IDENTITIES --------
+: AWS Cognito
+- guest user sign in
+- can sync data
+- supports amazon/facebook/google/ other OIDC providers ( open id connect
+  standard )
+: AssumeRoleWithWebIdentity
+- great for mobile apps / apps that don't want to store users/passwords
+1) works across accounts
+2) does'n require AWS creds
+3) session up to 1h
+
+** http-https/tcp-ssl
+- https/ssl are secure version of http/tcp
+- http/s is layer 7 protocol & allows cookies -> so we can have a sticky sessions
+- tcp/ssl is layer 4 prot & has no cookies -> no sticky sessions
+- if you want to use https / ssl you will need X.509 certificate & security
+  policy
+*** configure back-end authentication
+- create a public key policy
+- create a back-end instance authentication policy
+- set the back-end instance auth policy with instance port and protocol
+Once conifgured, the ELB will communicate only with an instance that has a
+matching public key
+
+** ACM ( Amazon Certificate Manager)
+*** CNAME: canonical name record (Name:Value)
+- name is the alias for domain name, value points at the acm validation server
+** In transit encryption
+- you can use Amazon Certificate Manger to manage your SSL/TLS certificates
+- apply certificate(s) to ELB(all supported)
+- ELB can terminate SSL or pass it through to EC2
+- you can have HTTPS/SSL traffic between ELB && EC2
+- CloudFront can also have SSL certs attached to them
+ 
+** Server Side Encryption
+- SSE-S3 ( encrypted by aws key )
+- SSE-KMS ( use your own kms key )
+- SSE-C ( you provide your own key, amazon encrypts data with it and destroys key )
+- Client Side Encryption ( you send already encrypted data )
+- you can enforce encryption by requiring in bucket policy that all PUT requests have a header: x-amz-server-side-encryption
+- glacier is encrypted by default
+- EBS / EFS / ElastiCache / DynamoDB / RDS - all can be encrypted with KMS ( just enable the option )
+ 
+** Network security
+- you can use DirectConnect to connect directly over private network to AWS ( no internet involved ) , takes time to set up
+- you can use VPN to connect between sites / aws
+- VPC’s have ACL’s(access control list, they are stateless) 
+- WAF ( web application firewall ) - protects you from common exploits ( eg: sql injections )
+- Security groups ( statefull firewalls , they run on HYPERVISOR - you don’t have access to that )
+- System firewall ( you can have your own firewall on an instance - very popular for windows instances )
+ 
+** Security Groups
+- each instance can have up to 5 SG's
+- if you don't attach SG to EC2, default one is attached automatically
+** NACL network access control lists
+- each subnet in VPC is associated with ACL (default if none explicitly attached)
+- NACL can be associated with many SG's, but SG can only be associated with one
+  NACL
+** WAF (web application firewall)
+- you can set it in front of
+: API Gateway
+: CloudFront
+- helps prevent common attacks ( SQL injection, cross-site scripting)
+- you can use it to define your own Access Control Lists (ACL’s) / custom rules for network traffic
+** how to keep in sync KMS CMK keys across regions
+1) Secrets Manager rotates a secret in your original AWS Region.
+2) CloudTrail receives a log with “eventName”: “RotationSuceeded”.
+3) CloudTrail passes this log to CloudWatch Events.
+4) A filter in CloudWatch Events for this EventName triggers a Lambda function.
+5) The Lambda function retrieves the secret value from the origin AWS Region.
+6) The Lambda function then performs PutSecretValue on a secret with the same name in the replica AWS Region.
+* SNS
+- encryption in transit is enabled by default,   enable encryption at rest using
+: Customer master key (CMK)
+- Access Policy: defines who can access the topic. By default only topic owner can sub
+- Delivery Retry Policy: how & how many times SNS will retry delivery via HTTP/S
+- Delivery status logging:   log successful deliveries of messages
+
+** Subscription
+- Subscriptions: [HTTP/S, Email, SQS, Lambda, SMS, mobile app endpoint]
+- Have:
+: Filter Policy
+: Redrive Policy ( DeadLetterQueue - SQS )
+* SSM PARAM Store
+- tracks history of the changes to the parameter
+- get param by path
+#+begin_src 
+aws ssm get-parameters-by-path --path '/aws/service/ami' --region eu-west-1 
+#+end_src
+* SSM Automation
+- you can add manual approval step before ssm starts executing
+- Run Command -> API is 
+: SendCommand ( not RunCommand !!!!)
+#+begin_src bash
+         "Effect":"Allow",
+         "Action":[
+            "ssm:SendCommand"
+         ],
+         "Resource":[
+            "arn:aws:ec2:*:*:instance/*"
+         ],
+         "Condition":{
+            "StringLike":{
+               "ssm:resourceTag/Finance":[
+                  "WebServers"
+               ]
+#+end_src
+* SECRETS MANAGER
+- can use lambda to auto-rotate secrets on some databases
+- databases that support auto-rotation ( so you don’t have to write your own lambda )
+: RDS ( Aurora, MYSQL, PostgreSQL, Oracle, Microsoft, MariaDB )
+: Redshift
+: DocumentDB
+- SM uses staging labels to identify different version of the secret 
+: AWSCURRENT - there always has to be one in place, its the default version if you don’t specify one 
+: AWSPENDING, AWSPREVIOUS ( think aliases when staging labels come up, you can change secret they point at)
+: use staging labels when you are implementing your own lambda for secrets rotation
+  
+* STORAGE GATEWAY
+AWS Storage Gateway offers file-based, volume-based, and tape-based storage
+solutions. With a tape gateway, you can cost-effectively and durably archive
+backup data in GLACIER or DEEP_ARCHIVE.
+
+- tape gateway ( uses GLACIER in the background - so no REAL TIME processing is
+  possible )
+
+- you can run SG:
+: on-prem ( VM appliance / hardware appliance)
+: in aws (EC2 instance)
+You can use gateways hosted on EC2 instances for disaster
+recovery, data mirroring, and providing storage for applications hosted on
+Amazon EC2.
+
+* TRUSTED ADVISOR
+- global service, you have to be in N.Virginia to use CW Events
+- 5 dimensions, 2 are free ( partially ) : Security & Service limits
+- 3 tiers: Free, Business && Enterprise 
+- you can get weekly email
+- you can refresh findings every 5 min max
+- cli for refresh < aws support refresh-trusted-advisor-check >
+- can detect exposed IAM keys
+- business/enterprise clients can view service limit METRICS & can create alarms on top of them
+ ( eg. your instances are over 80% of utilization...hit alarm )
+* WINDOWS
+- you can use BYOL ( bring your own licence ) or LI ( licence included )
+- when calculating cost of your VM's & you will use BYOL, use linux AMI, because
+  windows AMI's assume LI costs
+* X-RAY
+- it can track request cross region, region annotations will be added
+  automatically for aws services ( custom ones will need to be instructed to do so)
+- stores data for 30 days
+- x-ray can assume role & work cross account (   aggregate results in
+  master account )
+- x-ray doesn't push graph anywhere, you have to query it 
+- cli: < get-service-graph > will return json rep of graph with errors
+you can use that cli to respond to errors or metrics in the graph 
+* VPC 
+- 5 Elastic IP MAX per region
+- VPC endpoint
+allows you to connect to an AWS service 
+eg. you have a EC2 in a private subnet with no internet access
+you can connect that EC2 to S3 using VPC connect
+
+You don't have to use 
+1) internet gateway 
+2) NAT device
+3) VPN connection 
+3) AWS Direct Connect
+
+There are two types of endpoints
+: interface endpoint
+uses AWS PrivateLink
+
+: gateway endpoint
+only for S3 && DynamoDB
+* === EXAM QUESTIONS ===
+** availabiity
+*** are AZ's separated phisically?
+- yes, they are, but stay within 100km range from each other
+** acm
+Amazon Certificate Manager
+*** can I use ACM to store software licences?
+- NO! It's only good for SSL/TLS certificates
+Use Licence Manager or DynamoDb to just store the keys
+** api 
+*** you have a new api route you want to test, should you use canary or lambda alias?
+- use canary, alias can be used to test the behaviour of the SAME route
+: remember one route is mapped to one lambda/some service
+** aurora
+*** can I lunch Aurora as a multi master setup ? 
+- Yes ( two writer nodes in a single AZ - cross region is coming...so might
+  change!)
+For CROSS-REGION use Aurora Global Tables
+*** can I have Aurora tables available globally / cross region
+- yes, use Aurora Global Database
+*** error: rds-event-0045
+! question mentions that configuration has been changed prior to error
+- discount all answers that involve code changes
+! question mentions replication worked before
+- discount db engine changes, since it worked before
+! deleting & recreating replicas doesn't solve the underlying cause
+solution: max_allowed_packet parameter !!!!! has been changed - so
+check if it matches the source db
+
+** beanstalk
+*** can you delete old environment & keep the RDS in it?
+- yes, turn on 'deletion protection' on RDS
+- make sure to DELETE environments security group rule in RDS setting BEFORE ( RDS is
+  depenedent on this SG, and will stop the envrionment deletion !)
+*** can you force deployment even if health check fails?
+Yes, use 'Ignore health' option
+*** you want to update elb redirect but can't change beanstalk config directly, how would you do it?
+- you can't use eb cli as per constraint 
+- create file in .ebextensions folder with .config extension
+: in option_settings block
+: specify rule < aws.elbv2.listener:default > 
+#+begin_src 
+option_settings:
+  aws:elasticbeanstalk:environment:
+    LoadBalancerType: network
+#+end_src
+*** you want to run a db migration before deploying an app, which command would you use?
+- run a container_command with leader_only attribute
+*** you have a nodejs app, how to trigger alert when application errors hit 100/per minute?
+- remember ebs app can be distributed across many instances so using internal
+  app logic won't be a good idea. Filter logs exported by ebs & build metric
+  from them, & build alarm on top of the metric
+*** you have on-prem & on-demand instances, can you use beanstalk for deployments?
+- no, EB cannot be used with on-prem instances
+*** can you use custom AMI's with ebs?
+- yes! Use them to cut down the app configuration time.
+To create custom ebs image, run one in a EC2, make modifications, create AMI, done
+*** do managed updates impact availability / capacity or cause downtime?
+- Nope!
+** codebuild
+*** do i need custom metrics to get number of builds/fails in CB?
+no, these are standard metrics
+*** can i test code with CB that has been deployed to 'staging' environment?
+- yes, thats what CB is for, run a container, install
+  testing suite, run it agains the 'staging' environment. done!
+*** what is the priority of set env variable?
+- start build operation call ( runtime ?) is highest precedence
+- value in the build project definition
+- value in the build spec declaration - lowest precedence
+*** are env name starting with CODEBUILD_ reserved?
+Yes
+*** build phase transitions:
+- upload_artifacts are always attempted, event if the build phase fails
+  (assuming you got to build phase)
+- if command fails before install, CB moves to finalizing phase
+- after failing pre-build CB goes to finalizing phase, will not execute
+  post-build or export artifacts (nothing was built!)
+- provisioning comes before download_source
+*** can you run CB in private VPC?
+- enable vpc access in your CB
+- you have to give vpc id,subnets & sg's in your build project.
+- cli: aws events put-rule --schedule-expression 'cron(10 3 ? * 
+  mon-fri )'
+*** what images are available in CB?
+- windows server
+- ubuntu
+- custom docker image
+*** can you use cross account docker image stored in ECR?
+- yes, CB supports cross-account images from ECR (provide full URI to ECR)
+** codecommit
+*** disallow pushing to master
+- attach IAM policy on the Developer group 
+- CodeCommit doesn't support resource-based policies ( you can't attach policy on the
+  repository itself!)
+*** how to automatically public release notes from production deploy ( using gitflow )
+- set up cw event rule to watch for 'repository state change' 
+- look for 'ReferenceCreated' event with 'tag' referencetype after merge into master
+- trigger lambda to get release commit message using CC api -> store it in
+  static website hosted in S3
+why: gitflow release procedure involves tagging release branch after merging
+into master, so you want to look for that event.
+*** how to filter notifications on the commit comments?
+- make sure everyone signes in to CC as IAM users
+- use SNS subscription filter policy to restrict topic subscription
+*** developer cannot connect using ssh, how to troubleshoot
+- you dont need aws cli to use ssh
+- CC requires KMS service, check user policy re kms
+- check local config in .gitconfig ( clear keychain access on mac )
+*** can i send CC events directly to CW Logs ?
+- no, you have to use either SNS ( notifications ) or SNS/Lambda (triggers) and
+  then forward to Logs
+*** can poweruser managed policy for codecommit allow pushing to master
+- it allows pretty much everything ( even branch deletion )
+- poweruser CANNOT delete repository (FullAccess is required for that)
+Use IAM to deny actions
+*** can CC send notification directly to SNS in different region?
+- NO, CC is a regional service
+*** can I trigger lambda from CC ?
+- yes, you can trigger SNS or Lambda directly from CC
+*** can I reuse existing ssh key to connect to new repo?
+Yes:
+1) upload your ssh public key to your IAM profile (security cred tab)
+2) update .ssh/config file with 
+- Host ( path to codecommit )
+- User ( IAM credentials username )
+- IdentityFile ( path to private key )
+** codedeploy
+*** you have ASG & you deploy with CD, after SUCCESSFUL deployment you have 2 instances with old version
+- ASG scaled up during the deployment & used last working version
+Solution: suspend 'scale out' during deployment
+*** can I do a blue/green deployment to on-prem instances?
+- NO, only EC2/ECS/Lambda can be used for blue / green
+( you would think that you can register on-prem using SSM, tag them, and define
+them as blue env - but NO!)
+- ALL Lambda deployments are blue/green !
+*** will deployment fail if im using multi EC2 - OneAtATime deployment & last instance fails to deploy?
+- no, this is an edge case, OneAtATime  allows max 1 instance to be taken
+  offline, so if it happens to be the last instance...this will not trigger
+  failure
+- OneAtATime is a default Deployment Configuration ( if you don't specify any )
+*** which deployment is faster for LAMBDA: HalfAtATime / Linear / Canary?
+- trick question! HalfAtATime is available only to EC2
+- canary shifts in 2 increments, so will be faster than linear ( given same
+  timeouts )
+*** which Deployment Configurations are available for ECS?
+- only one
+: ECSAllAtOnce -> shift all traffic in one go
+NO OTHER OPTIONS! ( no canary, no linear, just all at once !)
+*** can I stop / rollback deploy based on alarm?
+- yes, you can associate alarm with the deployment group ( max 10 alarms !)
+*** can rollback happen based on metric?
+- no, CD can rollback only due to Alarm, not a metric 
+*** can CD do canary deployment on EC2?
+- no (its for lambda/api gateway only), create separate deployment group with small number of instances, deploy
+  there, test, and if ok, deploy to prod
+*** can CD deploy from other location than S3?
+- yes, S3 or Git/CodeCommit
+*** can you use custom environment variables in CD? ( in addition to default ones )
+- no, you only have access to
+: APPLICATION_NAME, DEPLOYMENT_GROUP_ID, DEPLOYMENT_GROUP_NAME, DEPLOYMENT_ID, LIFECYCLE_EVENT
+** codepipeline
+*** CP cannot access github. how would you troubleshoot?
+- number of oauth tokens is limited & CP reached it's limit. manually configure
+  oauth token as a personal access token, and then configure all pipelines in
+  your account to use that token
+- check permission of the oauth token for CP, try signing in to github &
+  setting check 'authorized oauth apps'
+explanation: CP uses github oauth tokens and personal access tokens to access GH
+repos. CP doesn't expire your personal github access token
+*** can CP invoke another CP or push directly to CodeCommit/Git?
+- nope, use S3 as a pass through
+*** how can you deploy to two different environments
+- you will need one pipeline per environment 
+OR
+- one pipeline, and switch User Data using 'mappings' in CloudFormation template
+  / use parameter overwrite in CODE PIPELINE
+#+begin_src note
+Parameter overrides let you specify template parameter values that override values in a template configuration file
+#+end_src
+*** how to get all pipeline failures?
+- there are three options in CW Events
+: Stage Excution State Change
+: Action Excution State Change
+: Pipeline Excution State Change
+so the answer: well..pipeline exec state change
+*** can pipeline run actions in different regions?
+- yes, you can trigger deployments in different regions
+*** can pipeline execute 3rd party software that is installed on-prem?
+- yes, use custom action
+- create custom job worker
+- CP will create job request 
+- job worker polls CP all the  time & will detect job request
+- job worker processes job using 3rd party software & sends result back to CP
+*** should I have a separate pipeline for each branch?
+- probably not, just create PULL REQUESTS to merge into master & have pipeline
+  for master
+*** can I use CloudWatch Events as an Action provider?
+- No! 
+Example: CW Event can trigger Step Function, but you cannot use CW in Pipeline
+as trigger
+*** is CP free? 
+- NO! 1$ per pipeline per month - lol !
+*** can I control access to pipeline with IAM?
+- yes!
+** cloudwatch
+*** can I write to CW logs directly from cw events?
+no. use lambda to write to logs
+*** can cloud watch logs subscription trigger step function? ( is there an integration )
+- NO, CW Logs subscription CAN trigger Lambda
+*** can cloud event rule target an S3?
+- nope, use lambda or some other service to target S3
+*** can CW rule take EC2 Snapshot? 
+- Yes! (you have to provide EBS id)
+*** how to notify when estimated charges reach limit?
+- enable billing alerts
+- use default EstimatedCharges metric to create alarm
+- use sns to send notification
+*** metrics retention limits
+>60s 3hrs
+1min 15 days
+5min 63 days
+1hr  15 months
+*** aggregated metrics
+you have to enable 'detailed' metrics (1 min ping) to enable aggregated metrics
+*** notify if memory util goes over the limit, you run cloudwatch agent on an EC2
+- you don't have to filter logs to get mem util, you already have it in metrics
+  thanks to agent
+- use SNS to trigger Lambda, use Lambda to trigger SSM Run Command to execute
+  restart of the app ( because its leaking memory
+- you can't subscribe EC2 to SNS (doh!!!)
+*** can I send notification directly from CW Alarm?
+- yes, you don't have to send to SNS, there is option to privide email list
+*** what services can alarm trigger?
+- SNS
+- email list
+*** what can alarm do when triggered?
+- it can scale ECS or ASG
+- it can stop/restart EC2 directly ( if its build on EC2-only metric)
+** cloudsearch
+*** how to set up managed search capability
+- create domain
+- configure index
+- configure access policy
+** cloudformation
+*** how can you get list of deleted stacks?
+- api call 
+list-stacks ( cf keeps list of deleted stacks up to 90 days )
+*** can I use intrinsic function in Mappings section to have dynamic values?
+- NO!
+: Allowed only in
+Resources properties, Metadata attributes, Outputs, UpdatePolicy attributes
+*** can you override params in StackSets?
+- yes, it's supported
+Example: you want to make modifications to only 2 out of 5 regions to which you
+deployed the stack
+: you select those 2 regions ( you can select any region when deploying ), and then apply override to params
+** cloudfront
+*** can I adjust weight of the incoming traffic in cloudfront?
+- NO, use Route53 for that
+*** troubleshoot certificate issue when adding alternate domain name
+wildcard & thirdparty CA can work with alternate domain name
+- check if cert is valid & trusted
+- there might have been temporary issue with CF, try validating again
+*** can you serve entire website from s3 & use cloudfront to speed it up?
+yes, its the most cost-effective, if all your content is static!
+** cloudtrail
+*** can I define two S3 buckets (or more) for trail logs?
+- NO, only 1 bucket allowed
+** cognito
+*** can I use cognito & AssumeRoleWithSAML api call ?
+- no! remember that SAML & OIDC ( the social federation ) are two separate
+  standards
+you can only use AssumeRoleWithWebIdentity api call if you are using OIDC 
+OR Cognito which can use a bunch of social identity providers 
+
+SAML is a completely different way of federating identity & uses 3rd party
+software eg. ADFS or Shibboleth...
+** config
+*** how to enable cloudtrail & config on multiple accounts under master account
+- use StackSet to enable cloudtrail on multiple accounts
+- use StackSet to enable config on multple account
+- create Aggregator for config on the main account
+- remember, you cannot use SNS sent by config to react to selected rules ( it
+  returns json with ALL the configuration changes - use CW Events instead )
+*** can I enable config rules on other accounts with lambda if they belong to my org?
+- yes, no need for StackSets, you can enable services from master account
+- if you are using Custom Rules ( not aws managed ), you will need a lambda in
+  master account to evaluate the rule
+*** what causes error: "we are unable to complete the request at this time. try again later or contact aws support"
+- aggregator limit reached ( 50 by default )
+- you are making more than one requests withing 1 minute time window
+*** is config integrated with SNS and can I set up notification when rule is breached?
+- yes and no, you can stream ALL config json to SNS, use CW Events for single
+  rule breaches!
+*** can I send notification directly from config?
+- no! you have to set up CW events to listen for changes and set target as SNS
+*** can I execute remediation actions directly from config? 
+- config uses SSM Automation for remediation 
+- you can associate remediation action directly with the config rule
+- if remediation action fails, you can auto re-try
+*** can I check for cloudformation drift using Config?
+- yes, there is even a Managed rule
+cloudformation-stack-drift-detection-check
+** cloudformation
+*** how to manage multi team CF template
+- have one template per team / logical part
+- use Import / Export values to reference between templates
+- do NOT have a master template that references all other as nested stacks
+( use nested stacks as a reusable pieces - eg: security group or a load balancer
+that you plug in to other templates )
+*** how to get region & az params dynamically
+-  you can't use intrinsic functions in parameters section of the cf template
+1) use !ref "aws::region", fn::getazs, fn::select
+2) use mappings-> list of all az in each region, fn::findinmap, 'aws::region'
+*** can CF do blue/green deployents to ECS?
+- no, only CD does
+*** how to debug cloudformation for EC2?
+- check the console
+- check the /var/log folder for cloud-init and cfn logs
+*** how to set up CloudSearch using CF?
+- trick question!
+CF doesn't support CS, you have to use CLI or SDK to set up CloudSearch domain
+*** can I add files/code to codecommit repo when creating it with cloudformation?
+- yes, use Code property for AWS::CodeCommit::Repository resource
+(zip file in S3 will be unpacked and comited by CodeCommit automatically)
+** dynamodb
+*** can I consolidate partitions on the DynamoDB
+- no, you would have to create new table and transfer over data
+*** can I create Global Secondary Index that supports strongly consistent reads?
+- NO, could be a trick question!
+If you need strong reads && you need different sort key && database already
+exists
+: create new DB with LSI && migrate data
+remember you cannot add LSI to an existing DB!
+*** can I modify provisioned read/write units after DB creation using lambda?
+- yes!
+** elasticearch
+*** what are the steps to create ELK stack using amazon services
+- use amazon elasticsearch service
+it will give you es, kibana & logstash out of the box & will manage them
+** elastic beanstalk
+*** can you create two tier application ( web & application )?
+- no, you can only choose web-server or worker environment ( single tier )
+*** does EB support automated rollback on failed deploy?
+- Nope, use you have to redeploy manually or build out an automation
+** elb
+*** can I store sessions in alb?
+- yes, you can enable 'sticky sessions'
+Be careful: if elb goes down, you loose session
+if servers are restared, you can end up with lobsided traffic!
+Best use Elasticache for session management
+*** can I do weighted balancing using NETWORK load balancer?
+- NO, only alb supports weighted target groups
+*** can you attach security group to NETWORK load balancer?
+- NO!
+*** classic load balancer fails health checks. why?
+- you have to define target page ie: /index.html
+*** health checks pass but app is down. why?
+- you need to use custom health check that check the app\s critical process
+not just if EC2 is running
+*** can I enable detailed monitoring on alb?
+- NO! Only EC2 has that option, discard that question if you see it
+- ELB already collects & sends metric data every 1 minute!
+*** is access logging turned on by default on elb?
+- NO, you have to turn it on yourself
+you get to specify which S3 bucket to save the logs to
+*** instances in ASG are OutOfService, ELB health checks pass. why?
+- check if SecurityGroups on  ELB & on instances in ASG allow traffic
+- or change traffic protocol on ELB
+: default is HTTP ( layer 7 ) & checking for specific file /index.thml
+: you can change to TCP ( layer 4 ) & not worry about file 
+** efs
+*** can i connect on-prem servers to EFS?
+yes -> this way you can access vpc from 'outside'
+** ec2
+*** how can you automate ec2 recovery?
+- use EC2Rescue tool && SSM Automation document 'AWSSupport-ExecuteEC2Rescue'
+*** how to restrict users from deleting other user's instances?
+- tag instances / user roles
+- compare aws:principaltag && iam:resourcetag in a policy attached to
+  developer role
+*** placement groups
+- cluster
+packs instances close together inside an availability zone.
+this strategy enables workloads to achieve the low-latency network performance
+necessary for tightly-coupled node-to-node communication that is typical of hpc
+applications ( high performance computing )
+
+- partition
+spreads your instances across logical partitions such that
+groups of instances in one partition do not share the underlying
+hardware with groups of instances in different partitions.
+this strategy is typically used by large distributed and replicated workloads, such as hadoop, cassandra, and kafka.
+
+- spread
+strictly places a small group of instances across distinct underlying hardware
+to reduce correlated failures.
+*** can you download latest AWS Linux 2 image?
+- no, use VM Import/Export cli command ON THE INSTANCE from which you are
+  exporting image ( image is sent to  S3 in the same region )
+#+begin_src 
+  aws ec2 export-image --image-id // --imadisk-image-format // --s3-export-location
+#+end_src
+- you cannot export if there is 3rd party software installed by AWS ( eg.
+  windows )
+- you cannot export EBS volumes
+- you cannot export EC2 image shared from another AWS account
+- you cannot export to bucket that's encrypted with KMS (256 / no encryption is ok)
+*** can lambda functions SSH into EC2?
+- nope
+*** if you want to use your own licences, which hosts should you use
+- use Dedicated hosts
+: they give you a dedicated physical server dedicated for your use
+: allows you to meet compliance requirements 
+** ecs
+*** will adding a tag 'latest' make the ECS detect change in the image version?
+- no, if you have arn of an ECR image WITHOUT a tag, it means 'latest' is being
+  used by default, use SHA256 instead to target correct image
+*** how to deploy 3 containers: busy websocket app, corpo website & internal site
+constraints: suitable, cost-effective, reliable, aws-platform
+- busy websocket site will require multiple tasks, so use classic ecs
+  cluster ( managed by you !)
+- corpo website can be just managed by aws, use fargate
+- internal website is low importance but we still want redundancy, so
+  use beanstalk ( which can deploy single or multicontainer )
+*** can I start a task in ECS directly from CW Event?
+- yes, no need for lambda
+*** can i run SSM Run command directly from CW Event? Can it create IAM role to execute this task?
+- yes to both
+CW Events can automatically create necessary IAM role to execute the SSM Run command
+*** if I don't change the image:tag of the new revision of task, do I have to create new revision of task definition?
+- No, just use --force-new-deployment option, and ECS will pull image again
+You can use this option with Fargate when updating platform verions tagged as LATEST
+** guardduty
+*** can I use GD to aggregate CloudWatch Events in a single account?
+- yes, use Organisations, and then you can set up one CW Rule in admin account
+Send events to EventBus in admin account
+** iam
+*** can you modify aws managed policy? 
+- no! pay attention when they do mention that policy is managed
+*** can IAM Instance profile name and role name be different
+- you can define separate names if using ClI / SDK
+- when using console, these will be the same
+*** can I prohibit use of unapproved AMI's with IAM rules?
+yes, actually
+** kinesis
+*** kinesis data stream is slow & skips records. why?
+- make sure maxrecords is not lower than getrecords default value
+- check if processrecords call is not throwing an unhandled exception
+- check the code logic to ensure processrecords call isn't cpu intensive or io blocking
+*** how would you increase processing speed of your stream. you have one KCL app consuming atm
+- increase retention time ( to avoid dropping data )
+- put the consuming app into asg & scale it based on the 'MilisBehindLatest' metric
+*** error: after resharding you end up with an extra shard. what happened?
+difference between startinghashkey & endinghashkey is too small, which
+causes updateshardcount call to  end up with an extra shard 
+*** error: getshard - cannot find the shard given the shardid
+cause: after re-sharding & generated by kinesisproxy
+solution: restart kcl consumers
+** lambda 
+*** can lambda be used to create an AMI ?
+- nope ( not verified ), use SSM Automation document
+*** can lambda SSH directly into EC2?
+- no, use SSM Run command
+** logs
+*** you are asked to store logs from multiple accounts in a central location. how? 
+- create log destination in the central location
+- create Kinesis Streams & sub it to that location
+: you have to use K Streams to send logs across accounts
+: if only one account, you could just just send logs directly to Firehose
+- create Kinesis Firehose & sub it to the K Streams
+- point Firehose at S3
+*** you want to stream logs from ec2 to s3 & keep metadata in dynamoDB, what would you use as Primary key?
+- use instanceId as PK && date/time as a sort key
+*** how to create log destination
+: create kinesis stream
+#+begin_src 
+aws kinesis create-stream --stream-name "RecipientStream" --shard-count 1
+#+end_src
+
+: create IAM role that will allow CW Logs to assume role
+#+begin_src 
+{
+  "Statement":{
+     "Effect": "Allow",
+     "Principal": { "Service": "logs.eu-west-1.amazonaws.com"},
+     "Action": "sts.AssumeRole"
+  }
+}
+
+aws iam create-role \
+  --role-name MyLogRole
+  --assume-role-policy-document file://~/filewiththerole.json
+#+end_src
+
+: attach policy that will allow PutRecord && iam:PassRole to that role
+#+begin_src 
+aws iam put-role-policy \
+  --role-name MyLogRole
+  --policy-name MyLogPolicy
+  --policy-document file://filewithpolicy.json
+#+end_src
+
+: create CW Logs destination
+#+begin_src 
+aws logs put-destination \
+  --destination-name "myDestination" \
+  --target-arn "arn:aws:kinesis:us-east-1:9999999999:stream/RecipientStream" \
+  --role-arn "arn:aws:iam::9999999999:role/MyLogRole"
+#+end_src
+
+: allow sender account to access recipient account
+#+begin_src 
+{
+  "Version" : "2012-10-17",
+  "Statement" : [
+    {
+      "Sid" : "",
+      "Effect" : "Allow",
+      "Principal" : {
+        "AWS" : "111111111111"
+      },
+      "Action" : "logs:PutSubscriptionFilter",
+      "Resource" : "arn:aws:logs:region:999999999999:destination:myDestination"
+    }
+  ]
+}
+#+end_src
+
+: add that policy to destination
+#+begin_src 
+aws logs put-destination-policy \
+  --destination-name "myDestination" \ 
+  --access-policy file://myfilewithaccesstodestination.json
+#+end_src
+
+: now destination account 999999999 can share ARN of its destination with other accounts
+** load balancers
+*** alb support ip6, nlb & classic lb does not !!
+** macie
+available only in us east & west regions ( n.virginia & oregon )
+can privide actionable alerts on s3 (uses CloudTrail to examine data events on
+S3 objects)
+** opsworks
+*** can you set users and permissions in opsworks?
+yes. 
+you can import iam users, opsworks users from other region
+you can add ssh keys to user profiles
+if key is uploaded, user is created on every linux instance
+users are stored regionally
+roles: [owner, viewer, contributor]
+*** what provides lowest operational overhead in opsworks
+you have 3 choices: chef automate, puppet enterprise or stacks
+stacks comes with chef solo, automate & enterprise provision separate servers
+for those services. 
+lowest overhead is with stacks & chef solo
+*** how to configure your opsworks instance?
+use custom chef cookbook, you can use custom ones by giving git repo
+*** what is manage berkshelf option?
+its a dependency manager for chef cookbooks
+alows you to use community cookbooks without worry about dependencies
+*** can I set up load-based instances for Windows stack?
+No. Only 24/7 && time-based instances are available for windows stack
+Linux has access to load-based instances. Linux rox.
+*** can I auto rollback on failed deploy?
+- kinda, use DeploymentCommand to set version to which rollback if deploy fails
+** r53
+*** can you point an ALIAS at AutoScaling group?
+- no, you cannot point alias at ASG (using arn), you would need ELB in front
+** rds
+*** can you connect to RDS using IAM Role/User??
+- yes, no need to store passwords
+ONLY MySQL && Postgre supported !
+*** rpo & rto = 4hrs, how to achieve it?
+- use lambda to take snapshots of RDS every 4 hrs and copy to diff region
+- dont use SQL dump as it increases PRIMARY instance IO
+- taking snapshots 'works' against secondary instance ( don't stress primary instance)
+- automated snapshots are taken once a day for RDS
+*** can i create read replica from read replica?
+yes
+*** can i scale live storage in rds ?
+yes...unless you are using mssql engine !!
+*** can I update db EngineVersion on replica separately from master in multi-az setup?
+- No, when you update EngineVersion, ALL instances have to be updated AT THE SAME time
+*** can I create cross region read replica?
+-yes you can (for DR)
+*** you have MULTI-AZ DEPLOYMENT configuration, can you create STANDBY replica in different region?
+- NO, you can only create standby replica in the same region
+use READ REPLICA, since they can be cross-region
+** SAM
+*** can you deploy elasticache using sam template?
+- yes you can! It's not just for lambda / dynamodb / api
+You can specify ANY serverless ( aws managed service )
+** saml / adfs / federation
+*** how to allow staff to authenticate with aws console using active directory creds?
+- create iam saml identity provider
+- create a role with a saml trusted entity
+- configure AD
+- configure adfs with relay party
+- create custom claims rules
+** step function
+*** states language definitions
+- outputpath: filter the json output to further limit the information that is
+passed to the output 
+
+- resultpath: selects what combination of the state input and the task result to
+  pass to the output
+
+- inputpath: selects which parts of the json input to pass to the task of the task state
+*** best practices
+https://docs.aws.amazon.com/step-functions/latest/dg/sfn-best-practices.html
+** s3
+*** can you assign a IAM Role to a bucket?
+- LOL NO!
+*** can I send object level logs to another s3 directly?
+NO! You can only log directly Server-access-logs ie: some of the operations, but
+not all! ( and without details )
+
+: Use CloudTrail
+- set up CloudTrail to 'watch' for object level operations on given
+  S3 bucket
+- now you can create CW Event to watch for those events
+- create lambda that will lOG the object level operation  & trigger it with CW Event
+*** Is S3 good for data analytics?
+- no, use DynamoDB for storage
+*** how to force SSL on in transit objects to S3?
+- create a bucket policy that has DENY on 'aws:SecureTransport': 'false'
+*** how to grant access to external vendor to s3
+create a cross-account iam role
+grant permission to vendor aws id to use the role
+grant the role permission to the bucket
+** secrets manager
+*** what is the max len / size of secret
+max length is 256 characters
+max size is 10kb (10,000 bytes)
+1 char = multiple bytes !
+*** is automatic key rotation rotation available to custom services?
+- secrets can be auto rotated for aws managed services
+** security
+*** can I use NAT to communicate with internet from private subnet?
+- yes, that's whats its for!
+Remember, request cannot originate from 'outside'
+*** how can I use AWS Shield ( DDoS protection ) ?
+- CloudFront, Route53, ELB's already have a Standard level of AWS Shield, at no
+  additional cost ( there is an Advance tier you can buy)
+You can combine AWF rules with AWS Shield rules for a unified protection
+*** can I increase security on top of HTTPS for CLOUD FRONT?
+- yes, you can use 'field level encryption' ( cloudfront only )
+You can encrypt up to 10 headers / fields in a request with a private key
+Encryption happens CLIENT SIDE
+** route 53
+*** can I use R53 to do canary deployment with blue/green EC2 environments behind ELB?
+- yes, create weighted ALIAS records that point at the ELB's
+*** can I use R53 pointing at API Gateway to gradually shift traffic?
+- NO! You can't
+: Route 53 / API Gateway have no 'linear' deployment as an option
+API Gateway can do 'canary' deployment, if you want linear, use Lambda Alias
+*** we have 1 domain, 2 sites, how to lower latency for customers
+- create 2 latency records for our domain in r53 & point them at
+  optimal IP's
+- cloudfront is only good if we have one site & edge location could
+  cache content
+*** can I send healthchecks from R53?
+- Yes, you have to do so in order to implement 'Failover' routing policy
+- You can use HTTP(S) / TCP protocols for health checks
+- Make sure to update firewals / ACL around service in order for the health checks
+to reach them
+** ssm
+*** best way to patch a bunch of ec2?
+- patch manager and aws systems manager maintenance windows
+- patch manager will be able to execute commands on ec2's so no need
+  for ssm run commands
+*** how to rotate secrets on db that we don't manage
+- solution:
+
+you should ask the external party for a db user with at
+least two credential sets or the ability to create new users yourself.
+otherwise, you might encounter client sign-on failures.
+the risk is because of the time lag that can occur between the change
+of the actual password and - when using secrets manager -
+the change in the corresponding secret that tells the client which
+password to use.
+
+- explanation:
+
+secrets manager already natively knows how to rotate secrets for
+supported amazon rds databases.
+however, it also can enable you to rotate secrets for other databases
+or third-party services.
+it provides a secure api that enables the programmatic retrieval of
+secrets to ensure
+that it can't be compromised by someone examining your code and
+configurations stored in a version control system.
+secrets manager invokes the secrets rotation lambda function each time
+with the same secretid and clienttokenrequest.
+only the step parameter changes with each call.
+this helps prevent you from having to store any state between steps.
+
+** s3 glacier
+excellent for long-term, secure archival
+you have to pay for retrieval ( unless you stay in free tier )
+** storage gateway
+*** can I process data from tape appliance in real time using Rekognition?
+- no, SG tape applice is backed up by GLACIER, so no real time retrieval is possible
+** trusted advisor
+there are 3 levels: basic, business & enterprise
+only business & enterprise give you full access to features.
+enterprise will give you benefit only for:
+mission critical business applications such as microsoft, sap and oracle tools
+*** should you use built in email notification email service in trusted advisor?
+- NO if you care about time -> it's sent only once a week
+** sns
+*** can I receive AWS Health messages directly to SNS?
+- yes
+*** should you use SNS or SES to send emails with notifications?
+- use SNS
+** sso 
+*** troubleshoot sso
+- make sure that aws microsoft ad & aws organizations are in the same region
+- ensure number of sso permissions is less than 500 & you have no more than 1500
+  ad groups
+- make sure aws organisations are implemented & have all features enabled
+- make sure AD connector is in the master 
+** vpc
+*** what is more secure: downloading updates to s3 & connecting to it with  vpc endpoint or using NAT?
+- the S3 + vpc endpoint is more secure, as the application doesn't have to send
+  any requests outside of aws network 
+*** how can I connect to public internet from a private IPv4 vpc?
+- NAT instance 
+- NAT gateway ( highly available version of instance )
+ONLY!
+- NOT a correct solution! -> Egress-only Internet Gateway -> (it would work only
+  for IPv6 )
+** x-ray
+*** can I run X-ray in ECS?
+YES
+- modify your SKD to use x-ray
+- build an image with x-ray daemon installed 
+- allow UDP!!!!(not TCP) traffic on port 2000 ( I know ... )
+** exam links
+- aws 10 question with answers
+https://d1.awsstatic.com/training-and-certification/docs-devops-pro/AWS%20Certified%20DevOps%20Engineer%20-%20Professional_Sample%20Questions.pdf
+
