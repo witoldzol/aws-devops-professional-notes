@@ -1561,7 +1561,7 @@ uses AWS PrivateLink
 
 : gateway endpoint
 only for S3 && DynamoDB
-* === EXAM QUESTIONS ===
+* === SAMPLE QUESTIONS ===
 ** availabiity
 *** are AZ's separated phisically?
 - yes, they are, but stay within 100km range from each other
